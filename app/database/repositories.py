@@ -4,16 +4,29 @@ from typing import Dict, List, Tuple
 import numpy as np
 from sqlalchemy import delete, func, select
 
+from ..config import settings
 from .connection import session_scope
 from .exceptions import DatabaseError
 from .models import FaceEmbedding, Identity, Image
+
+
+def _distance_expr(metric: str, query: np.ndarray):
+    """Return the pgvector distance expression and score formula for a metric."""
+    if metric == "l2":
+        distance = FaceEmbedding.vector.l2_distance(query)
+        return distance, -distance
+    if metric == "inner_product":
+        distance = FaceEmbedding.vector.max_inner_product(query)
+        return distance, -distance
+    distance = FaceEmbedding.vector.cosine_distance(query)
+    return distance, (1 - distance)
 
 
 def save_identity(
     name: str,
     embedding: np.ndarray,
     source_image: str,
-    person_id: str | None = None,
+    person_id: str | None,
 ) -> str:
     """Persist an identity and one embedding row; returns the person_id."""
     person_id = person_id or uuid.uuid4().hex[:8]
@@ -88,16 +101,22 @@ def list_identities() -> List[dict]:
 def search_embeddings(
     embedding: np.ndarray,
     limit: int = 10,
+    metric: str = settings.distance_metric,
 ) -> List[Tuple[str, float]]:
-    """Find nearest identities by pgvector cosine similarity."""
+    """Find nearest identities by pgvector distance for the given metric.
+
+    Supported metrics: ``cosine`` (default), ``l2``, ``inner_product``.
+    Returns ``(person_id, similarity)`` where similarity is higher for
+    closer matches (>=1.0 for an exact match under cosine/L2).
+    """
     query = embedding.flatten().astype(np.float32)
-    distance = FaceEmbedding.vector.cosine_distance(query)
+    distance, score = _distance_expr(metric, query)
     try:
         with session_scope() as session:
             rows = session.execute(
                 select(
                     FaceEmbedding.person_id,
-                    (1 - distance).label("similarity"),
+                    score.label("similarity"),
                 )
                 .order_by(distance)
                 .limit(limit)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import uuid
+import hashlib
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -19,6 +19,16 @@ Image.MAX_IMAGE_PIXELS = settings.max_image_pixels
 def _ensure_dirs() -> None:
     settings.originals_dir.mkdir(parents=True, exist_ok=True)
     settings.thumbnails_dir.mkdir(parents=True, exist_ok=True)
+
+
+def content_hash(data: bytes) -> str:
+    """Return a content-derived ID for an image: sha256 of its bytes.
+
+    Using the hash as the storage filename makes identical uploads
+    collide on the same path, so duplicate images are never re-written
+    (dedup by content instead of caching).
+    """
+    return hashlib.sha256(data).hexdigest()[:32]
 
 
 def decode_image(data: bytes) -> np.ndarray:
@@ -64,11 +74,16 @@ def safe_filename(filename: str, max_len: int = 255) -> str:
 
 
 def save_original(data: bytes, filename: str) -> Path:
-    """Persist original image bytes to storage and return its path."""
+    """Persist original image bytes to storage, keyed by content hash.
+
+    Identical images produce the same hash, so the file is written only
+    once; re-uploads reuse the existing path (no duplicate storage).
+    """
     _ensure_dirs()
     ext = _ext(filename)
-    path = settings.originals_dir / f"{uuid.uuid4().hex}.{ext}"
-    path.write_bytes(data)
+    path = settings.originals_dir / f"{content_hash(data)}.{ext}"
+    if not path.exists():
+        path.write_bytes(data)
     return path
 
 
@@ -81,13 +96,21 @@ def delete_original(path: Path) -> None:
 
 
 def save_thumbnail(image: np.ndarray, size: Optional[tuple] = None) -> Path:
-    """Downscale an image array, save it, and return the thumbnail path."""
+    """Downscale an image array, save it, and return the thumbnail path.
+
+    The filename derives from a hash of the source pixels, so the same
+    image always maps to the same thumbnail (dedup; never re-encoded).
+    """
     _ensure_dirs()
     size = size or settings.thumbnail_size
     img = Image.fromarray(image.astype(np.uint8))
     img.thumbnail((size[0], size[1]), Image.LANCZOS)
-    path = settings.thumbnails_dir / f"{uuid.uuid4().hex}.jpg"
-    img.convert("RGB").save(path, "JPEG", quality=85)
+    rgb = img.convert("RGB")
+    data = BytesIO()
+    rgb.save(data, "JPEG", quality=85)
+    path = settings.thumbnails_dir / f"{content_hash(data.getvalue())}.jpg"
+    if not path.exists():
+        path.write_bytes(data.getvalue())
     return path
 
 

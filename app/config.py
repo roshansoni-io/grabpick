@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+DISTANCE_METRICS = ("cosine", "l2", "inner_product")
+
 
 @dataclass(slots=True)
 class Settings:
@@ -17,6 +19,7 @@ class Settings:
         os.getenv("GRABPICK_EMBEDDING_MODEL", "model/embedding/edgeface_xs_gamma_06.onnx")
     )
     recognize_threshold: float = float(os.getenv("GRABPICK_THRESHOLD", "0.45"))
+    distance_metric: str = os.getenv("GRABPICK_DISTANCE_METRIC", "cosine").lower()
     database_url: str = os.getenv(
         "DATABASE_URL", "postgresql+psycopg://localhost:5432/grabpick"
     )
@@ -40,6 +43,13 @@ class Settings:
         "true",
         "yes",
     }
+
+    def __post_init__(self) -> None:
+        if self.distance_metric not in DISTANCE_METRICS:
+            raise ValueError(
+                f"GRABPICK_DISTANCE_METRIC must be one of {DISTANCE_METRICS}, "
+                f"got {self.distance_metric!r}"
+            )
 
 
 settings = Settings()
