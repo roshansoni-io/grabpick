@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+onnxruntime
+opencv-python
+numpy
+sqlalchemy
+psycopg
+pgvector

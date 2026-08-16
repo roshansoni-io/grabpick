@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.idea
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Model binaries (download / build them, don't commit)
+model/
+models/
+*.onnx
+
+# Uploaded / generated media
+storage/
+
+# Logs
+*.log
+nohup.out
+
+# Editor / tooling
+.vscode/
+.idea/
+.agents/
+*.swp
+.DS_Store
+Thumbs.db
