@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import numpy as np
 
-from .. import ml
 from ..exceptions import ProcessingError
+from ..database import DatabaseError, save_image_metadata
 from ..ml.types import Detection, RecognitionResult
 from ..schemas.face import Face, FaceMatch
 from ..schemas.photo import Photo, PhotoUploadResponse
@@ -53,14 +53,14 @@ def _detections_to_faces(
 
 
 def process_upload(data: bytes, filename: str) -> PhotoUploadResponse:
-    """Save an uploaded photo, detect/identify faces, and return results."""
-    original = storage.save_original(data, filename)
+    """Validate and decode an uploaded photo, save it, then detect/identify faces.
 
-    try:
-        image = ml.load_image(original)
-    except Exception as exc:
-        logger.error("process_upload: could not decode image: %s", exc)
-        raise ProcessingError(f"Could not decode uploaded image: {exc}") from exc
+    The image is decoded (and validated) *before* being persisted so that
+    garbage or oversized files never land on disk.
+    """
+    image = storage.decode_image(data)
+    safe_name = storage.safe_filename(filename)
+    original = storage.save_original(data, safe_name)
 
     try:
         results = run_identify(image)
@@ -71,9 +71,17 @@ def process_upload(data: bytes, filename: str) -> PhotoUploadResponse:
     faces, matches = _detections_to_faces(image, results)
     thumb_url = storage.thumbnail_url(storage.save_thumbnail(image))
 
+    try:
+        people = [
+            {"person_id": m.person_id, "name": m.name} for m in matches
+        ]
+        save_image_metadata(original.name, str(original), people)
+    except DatabaseError as exc:
+        logger.warning("process_upload: could not record image metadata: %s", exc)
+
     photo = Photo(
         id=original.stem,
-        filename=filename,
+        filename=safe_name,
         uploaded_at=datetime.utcnow(),
         original_url=storage.original_url(original),
         thumbnail_url=thumb_url,

@@ -14,3 +14,14 @@ class SearchResult(BaseModel):
 class SearchResponse(BaseModel):
     limit: int
     results: List[SearchResult]
+
+
+class PersonImage(BaseModel):
+    image: str
+    original_url: Optional[str] = None
+
+
+class PersonImagesResponse(BaseModel):
+    person_id: str
+    name: Optional[str] = None
+    images: List[PersonImage]

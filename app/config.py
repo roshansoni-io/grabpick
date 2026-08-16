@@ -31,6 +31,15 @@ class Settings:
     originals_dir: Path = Path("storage/originals")
     thumbnails_dir: Path = Path("storage/thumbnails")
     thumbnail_size: Tuple[int, int] = (320, 320)
+    max_upload_bytes: int = 10 * 1024 * 1024
+    max_image_pixels: int = 40_000_000
+    rate_limit_max: int = int(os.getenv("GRABPICK_RATE_LIMIT_MAX", "60"))
+    rate_limit_window: int = int(os.getenv("GRABPICK_RATE_LIMIT_WINDOW", "60"))
+    trust_proxy: bool = os.getenv("GRABPICK_TRUST_PROXY", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 settings = Settings()

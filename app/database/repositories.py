@@ -6,7 +6,7 @@ from sqlalchemy import delete, func, select
 
 from .connection import session_scope
 from .exceptions import DatabaseError
-from .models import FaceEmbedding, Identity
+from .models import FaceEmbedding, Identity, Image
 
 
 def save_identity(
@@ -106,6 +106,66 @@ def search_embeddings(
         raise DatabaseError(f"Failed to search embeddings: {exc}") from exc
 
     return [(person_id, float(similarity)) for person_id, similarity in rows]
+
+
+def save_image_metadata(image: str, path: str, people: list[dict]) -> None:
+    """Upsert per-image metadata: the list of people, count, and full path.
+
+    ``people`` is a list of ``{"person_id": ..., "name": ...}`` dicts. Stored
+    as a single row per image (JSONB), replacing the old row-per-person model.
+    """
+    try:
+        with session_scope() as session:
+            row = session.scalars(select(Image).where(Image.image == image)).first()
+            if row is None:
+                session.add(
+                    Image(
+                        image=image,
+                        path=path,
+                        face_count=len(people),
+                        people=people,
+                    )
+                )
+            else:
+                row.path = path
+                row.people = people
+                row.face_count = len(people)
+    except Exception as exc:
+        raise DatabaseError(f"Failed to save image metadata for {image}: {exc}") from exc
+
+
+def get_image(image: str) -> dict | None:
+    """Return the aggregate metadata row for a single image."""
+    try:
+        with session_scope() as session:
+            row = session.scalars(select(Image).where(Image.image == image)).first()
+    except Exception as exc:
+        raise DatabaseError(f"Failed to get image metadata for {image}: {exc}") from exc
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "image": row.image,
+        "path": row.path,
+        "face_count": row.face_count,
+        "people": row.people,
+    }
+
+
+def list_person_images(person_id: str) -> list[str]:
+    """Return the filenames of all images in which a person appeared."""
+    try:
+        with session_scope() as session:
+            rows = session.execute(
+                select(Image.image)
+                .where(Image.people.contains([{"person_id": person_id}]))
+                .order_by(Image.id.desc())
+            ).all()
+    except Exception as exc:
+        raise DatabaseError(
+            f"Failed to list images for person {person_id}: {exc}"
+        ) from exc
+    return [image for (image,) in rows]
 
 
 def delete_identity(person_id: str) -> None:

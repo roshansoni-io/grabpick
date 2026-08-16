@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .api import health, people, photos, search
+from .api.middleware import RateLimitMiddleware
 from .config import settings
 from .database import init_db
 from .services.face_service import reload_database
@@ -49,8 +50,15 @@ settings.originals_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(settings.thumbnails_dir)), name="static")
 app.mount("/originals", StaticFiles(directory=str(settings.originals_dir)), name="originals")
 
+app.add_middleware(RateLimitMiddleware)
 
-if __name__ == "__main__":
+
+def run() -> None:
+    """Start the dev server with `python -m app` (or `python -m app.main`)."""
     import uvicorn
 
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+if __name__ == "__main__":
+    run()

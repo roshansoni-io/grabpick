@@ -6,9 +6,14 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from ..config import settings
+from ..exceptions import ImageDecodeError
+
+_ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
+
+Image.MAX_IMAGE_PIXELS = settings.max_image_pixels
 
 
 def _ensure_dirs() -> None:
@@ -17,14 +22,45 @@ def _ensure_dirs() -> None:
 
 
 def decode_image(data: bytes) -> np.ndarray:
-    """Decode raw image bytes into an RGB numpy array (H, W, C)."""
-    with Image.open(BytesIO(data)) as image:
-        return np.asarray(image.convert("RGB"))
+    """Decode raw image bytes into an RGB numpy array (H, W, C).
+
+    Validates the image is a real, supported image and caps the pixel
+    count to protect against decompression-bomb denial of service.
+    """
+    try:
+        with Image.open(BytesIO(data)) as image:
+            if image.format not in _ALLOWED_FORMATS:
+                raise ImageDecodeError(
+                    f"Unsupported image format: {image.format or 'unknown'}"
+                )
+            width, height = image.size
+            if width * height > settings.max_image_pixels:
+                raise ImageDecodeError(
+                    "Image dimensions exceed the maximum allowed size"
+                )
+            return np.asarray(image.convert("RGB"))
+    except ImageDecodeError:
+        raise
+    except (
+        Image.DecompressionBombError,
+        UnidentifiedImageError,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise ImageDecodeError("Could not decode uploaded image") from exc
 
 
 def _ext(filename: str, fallback: str = "jpg") -> str:
     suffix = Path(filename).suffix.lower().lstrip(".")
     return suffix if suffix in {"jpg", "jpeg", "png", "webp", "bmp"} else fallback
+
+
+def safe_filename(filename: str, max_len: int = 255) -> str:
+    """Sanitize a client-supplied filename: strip paths and control chars."""
+    basename = filename.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    cleaned = "".join(c for c in basename if c.isprintable() and c not in "/\\")
+    cleaned = cleaned[:max_len].strip(" .")
+    return cleaned or "upload"
 
 
 def save_original(data: bytes, filename: str) -> Path:
@@ -34,6 +70,14 @@ def save_original(data: bytes, filename: str) -> Path:
     path = settings.originals_dir / f"{uuid.uuid4().hex}.{ext}"
     path.write_bytes(data)
     return path
+
+
+def delete_original(path: Path) -> None:
+    """Remove a stored original; silently ignore missing files."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def save_thumbnail(image: np.ndarray, size: Optional[tuple] = None) -> Path:

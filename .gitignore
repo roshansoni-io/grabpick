@@ -12,7 +12,8 @@ dist/
 .venv/
 venv/
 env/
-.idea
+.idea/
+.local/
 
 # Environment
 .env

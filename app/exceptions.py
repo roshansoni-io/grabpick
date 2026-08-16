@@ -28,3 +28,7 @@ class ProcessingError(ServiceError):
     """Raised when image processing or recognition fails."""
 
     status_code = 400
+
+
+class ImageDecodeError(ProcessingError):
+    """Raised when an uploaded image cannot be decoded or is invalid."""

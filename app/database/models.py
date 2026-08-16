@@ -2,7 +2,8 @@ from datetime import datetime
 
 import numpy as np
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -43,3 +44,23 @@ class FaceEmbedding(Base):
     )
 
     identity: Mapped[Identity] = relationship(back_populates="embeddings")
+
+
+class Image(Base):
+    """Per-image aggregate metadata: the people appearing in an image.
+
+    One row per image; ``people`` holds the list of detected people as
+    ``[{"person_id": ..., "name": ...}, ...]`` plus a denormalised
+    ``face_count`` so queries never need to join across person rows.
+    """
+
+    __tablename__ = "images"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    image: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    path: Mapped[str] = mapped_column(String, nullable=False)
+    face_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    people: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

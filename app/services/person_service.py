@@ -13,7 +13,7 @@ from ..database import (
     list_identities,
     save_identity,
 )
-from ..exceptions import NotFoundError, ProcessingError, ServiceError
+from ..exceptions import ImageDecodeError, ProcessingError
 from ..schemas.person import Person
 from ..utils import storage
 from ..utils.logger import logger
@@ -28,6 +28,12 @@ def _to_person(item: dict) -> Person:
         created_at=item.get("created_at"),
         updated_at=item.get("updated_at"),
     )
+
+def _face_area(detection) -> float:
+    """Return the area of a face bounding box."""
+    x1, y1, x2, y2 = detection.bbox
+
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
 
 
 def list_people() -> List[Person]:
@@ -69,27 +75,72 @@ def create_person(
 
 
 def enroll_person(name: str, data: bytes, filename: str) -> Person:
-    """Enroll a new person from an uploaded reference image.
+    """Enroll a person using a reference image.
 
-    Detects the largest face, embeds it, and registers the identity with
-    the database, then rebuilds the in-memory matcher.
+    The image is decoded, valid face detections are filtered, and the
+    largest valid face is selected for embedding. The original image is
+    saved only after successful face processing. If database enrollment
+    fails, the saved image is removed to avoid orphaned files.
     """
+    name = name.strip()
+
+    if not name:
+        raise ProcessingError("Person name cannot be empty")
+
+    if not data:
+        raise ProcessingError("Submitted image is empty")
+
+    # Decode the uploaded image.
     try:
         image = storage.decode_image(data)
+    except ImageDecodeError as exc:
+        raise ProcessingError("Could not decode image") from exc
+
+    # Detect faces and generate embeddings.
+    try:
+        results = ml.identify(image)
     except Exception as exc:
-        raise ProcessingError(f"Could not decode image: {exc}")
+        raise ProcessingError("Face processing failed") from exc
 
-    results = ml.identify(image)
-    if not results:
-        raise ProcessingError("No face found in the submitted reference image")
+    # Keep only detections with a valid face, embedding, and confidence.
+    valid = [
+        result
+        for result in results
+        if (
+            result.detection is not None
+            and result.embedding is not None
+            and result.detection.score >= 0.5
+        )
+    ]
 
-    best = max(results, key=lambda r: r.detection.score if r.detection else 0.0)
-    if best.embedding is None or best.detection is None:
-        raise ProcessingError("Could not extract a face embedding")
+    if not valid:
+        raise ProcessingError(
+            "No valid face found in the submitted reference image"
+        )
 
-    original = storage.save_original(data, filename)
-    person = create_person(name, best.embedding, str(original))
-    return person
+    # Select the largest detected face.
+    best = max(
+        valid,
+        key=lambda result: _face_area(result.detection),
+    )
+
+    # Save the original image.
+    original = storage.save_original(data, storage.safe_filename(filename))
+
+    try:
+        # Store the person and embedding in the database.
+        return create_person(
+            name=name,
+            embedding=best.embedding,
+            source_image=str(original),
+        )
+    except Exception:
+        try:
+            storage.delete_original(original)
+        except Exception:
+            pass
+
+        raise
 
 
 def delete_person(person_id: str) -> bool:
