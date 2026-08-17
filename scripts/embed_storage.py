@@ -1,9 +1,10 @@
 """Bulk-embed every face from images in a storage folder and store them in the DB.
 
 For each detected face the embedding is matched against all identities already
-in the database. If a match is found the face is skipped (it belongs to an
-existing person); otherwise a new identity is created with a unique person_id
-and the configured name (default: "unknown").
+in the database using pgvector nearest-neighbour search. If a match is found
+the face is skipped (it belongs to an existing person); otherwise a new
+identity is created with a unique person_id and the configured name
+(default: "unknown").
 
 Usage:
     python scripts/embed_storage.py [--dir storage/originals] [--name NAME]
@@ -25,13 +26,13 @@ from app import ml
 from app.config import settings
 from app.database import (
     init_db,
-    load_database,
+    match_identity,
     save_identity,
     save_image_metadata,
     session_scope,
 )
 from app.database.models import Image
-from app.ml.recognition.matcher import FaceMatcher
+from app.services.face_service import resolve_names
 from app.utils.logger import logger
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -48,20 +49,8 @@ def is_processed(source_image: str) -> bool:
         ) is not None
 
 
-def add_to_matcher(matcher: FaceMatcher, person_id: str, embedding: np.ndarray) -> None:
-    """Register a newly created identity so later faces can match against it."""
-    vector = np.asarray(embedding, dtype=np.float32).reshape(1, -1)
-    if matcher.matrix is None:
-        matcher.matrix = vector
-        matcher.index_map = [person_id]
-    else:
-        matcher.matrix = np.vstack([matcher.matrix, vector])
-        matcher.index_map.append(person_id)
-
-
 def process_image(
     path: Path,
-    matcher: FaceMatcher,
     name: str,
     rescan: bool,
     dry_run: bool,
@@ -83,14 +72,15 @@ def process_image(
 
     image_faces: list[tuple[str, str]] = []
     added = 0
+    matched_ids: set[str] = set()
     for i, encoding in enumerate(encodings, 1):
-        person_id, score = matcher.match(encoding)
+        person_id, score = match_identity(encoding)
         if person_id != "unknown":
             logger.info(
                 "Face %d from %s matches %s (%.3f); skipping",
                 i, path.name, person_id, score,
             )
-            image_faces.append((person_id, name))
+            matched_ids.add(person_id)
             continue
 
         if dry_run:
@@ -104,14 +94,14 @@ def process_image(
             embedding=encoding,
             source_image=path.name,
         )
-        add_to_matcher(matcher, new_id, encoding)
         logger.info("Added new person %s (%s) from %s", new_id, name, path.name)
         image_faces.append((new_id, name))
         added += 1
 
     if image_faces and not dry_run:
+        names = resolve_names(list(matched_ids))
         people = [
-            {"person_id": person_id, "name": person_name}
+            {"person_id": person_id, "name": names.get(person_id, person_name)}
             for person_id, person_name in image_faces
         ]
         save_image_metadata(path.name, str(path), people)
@@ -151,10 +141,6 @@ def main() -> None:
     if not args.dry_run:
         init_db()
 
-    matcher = FaceMatcher(
-        database=load_database(), threshold=settings.recognize_threshold
-    )
-
     images = iter_images(args.dir)
     if not images:
         logger.warning("No images found in %s", args.dir)
@@ -165,7 +151,7 @@ def main() -> None:
     for path in images:
         try:
             total += process_image(
-                path, matcher, name=args.name, rescan=args.rescan, dry_run=args.dry_run
+                path, name=args.name, rescan=args.rescan, dry_run=args.dry_run
             )
         except Exception as exc:
             logger.error("Failed to process %s: %s", path.name, exc)

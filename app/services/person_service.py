@@ -10,6 +10,7 @@ from .. import ml
 from ..database import (
     DatabaseError,
     delete_identity,
+    get_identity,
     list_identities,
     save_identity,
 )
@@ -17,7 +18,6 @@ from ..exceptions import ImageDecodeError, ProcessingError
 from ..schemas.person import Person
 from ..utils import storage
 from ..utils.logger import logger
-from .face_service import reload_database
 
 
 def _to_person(item: dict) -> Person:
@@ -46,10 +46,12 @@ def list_people() -> List[Person]:
 
 
 def get_person(person_id: str) -> Optional[Person]:
-    for person in list_people():
-        if person.person_id == person_id:
-            return person
-    return None
+    try:
+        item = get_identity(person_id)
+    except DatabaseError as exc:
+        logger.error("get_person failed: %s", exc)
+        raise
+    return _to_person(item) if item is not None else None
 
 
 def create_person(
@@ -57,7 +59,7 @@ def create_person(
     embedding: np.ndarray,
     source_image: str,
 ) -> Person:
-    """Create (or append to) an identity and rebuild the matcher."""
+    """Create (or append to) an identity."""
     try:
         person_id = save_identity(
             name=name,
@@ -67,7 +69,6 @@ def create_person(
     except DatabaseError as exc:
         logger.error("create_person failed: %s", exc)
         raise
-    reload_database()
     person = get_person(person_id)
     if person is None:
         raise DatabaseError("Identity was not found after creation")
@@ -125,7 +126,7 @@ def enroll_person(name: str, data: bytes, filename: str) -> Person:
     )
 
     # Save the original image.
-    original = storage.save_original(data, storage.safe_filename(filename))
+    original, created = storage.save_original(data, storage.safe_filename(filename))
 
     try:
         # Store the person and embedding in the database.
@@ -135,16 +136,17 @@ def enroll_person(name: str, data: bytes, filename: str) -> Person:
             source_image=str(original),
         )
     except Exception:
-        try:
-            storage.delete_original(original)
-        except Exception:
-            pass
+        if created:
+            try:
+                storage.delete_original(original)
+            except Exception:
+                pass
 
         raise
 
 
 def delete_person(person_id: str) -> bool:
-    """Delete an identity and rebuild the matcher."""
+    """Delete an identity and all of its embeddings."""
     if get_person(person_id) is None:
         return False
     try:
@@ -152,5 +154,4 @@ def delete_person(person_id: str) -> bool:
     except DatabaseError as exc:
         logger.error("delete_person failed: %s", exc)
         raise
-    reload_database()
     return True

@@ -11,9 +11,18 @@ from PIL import Image, UnidentifiedImageError
 from ..config import settings
 from ..exceptions import ImageDecodeError
 
-_ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "BMP"}
-
 Image.MAX_IMAGE_PIXELS = settings.max_image_pixels
+
+# Single source of truth for supported image formats.
+# MIME type -> (PIL format name, canonical file extension).
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg": ("JPEG", "jpg"),
+    "image/png": ("PNG", "png"),
+    "image/webp": ("WEBP", "webp"),
+    "image/bmp": ("BMP", "bmp"),
+}
+_ALLOWED_FORMATS = {fmt for fmt, _ in ALLOWED_IMAGE_TYPES.values()}
+_ALLOWED_EXTENSIONS = {ext for _, ext in ALLOWED_IMAGE_TYPES.values()} | {"jpeg"}
 
 
 def _ensure_dirs() -> None:
@@ -62,7 +71,7 @@ def decode_image(data: bytes) -> np.ndarray:
 
 def _ext(filename: str, fallback: str = "jpg") -> str:
     suffix = Path(filename).suffix.lower().lstrip(".")
-    return suffix if suffix in {"jpg", "jpeg", "png", "webp", "bmp"} else fallback
+    return suffix if suffix in _ALLOWED_EXTENSIONS else fallback
 
 
 def safe_filename(filename: str, max_len: int = 255) -> str:
@@ -73,18 +82,39 @@ def safe_filename(filename: str, max_len: int = 255) -> str:
     return cleaned or "upload"
 
 
-def save_original(data: bytes, filename: str) -> Path:
+def read_upload(file) -> bytes:
+    """Read an uploaded file enforcing the max size limit.
+
+    Returns the raw bytes; raises HTTPException(413) if the upload exceeds
+    ``settings.max_upload_bytes``. The caller is responsible for closing
+    the file handle.
+    """
+    from fastapi import HTTPException
+
+    data = file.file.read(settings.max_upload_bytes + 1)
+    if len(data) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Uploaded file is too large")
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    return data
+
+
+def save_original(data: bytes, filename: str) -> tuple[Path, bool]:
     """Persist original image bytes to storage, keyed by content hash.
 
     Identical images produce the same hash, so the file is written only
     once; re-uploads reuse the existing path (no duplicate storage).
+    Returns ``(path, created)`` where ``created`` is True only when this
+    call wrote the file (False on a dedup hit), so callers can safely
+    clean up their own files without deleting shared ones.
     """
     _ensure_dirs()
     ext = _ext(filename)
     path = settings.originals_dir / f"{content_hash(data)}.{ext}"
-    if not path.exists():
-        path.write_bytes(data)
-    return path
+    if path.exists():
+        return path, False
+    path.write_bytes(data)
+    return path, True
 
 
 def delete_original(path: Path) -> None:

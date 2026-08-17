@@ -1,6 +1,5 @@
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from ..config import settings
 from ..database import DatabaseError
 from ..exceptions import ServiceError
 from ..schemas.person import Person, PersonList
@@ -11,15 +10,9 @@ from ..services.person_service import (
     list_people,
 )
 from ..utils.logger import logger
+from ..utils.storage import ALLOWED_IMAGE_TYPES, read_upload
 
 router = APIRouter(prefix="/api/people", tags=["people"])
-
-ALLOWED_TYPES = {
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-    "image/bmp",
-}
 
 
 @router.get("", response_model=PersonList)
@@ -54,22 +47,14 @@ def enroll_person_endpoint(
     name: str = Form(..., min_length=1, max_length=200),
 ) -> Person:
     """Enroll a new person from an uploaded reference image containing a face."""
-    if file.content_type not in ALLOWED_TYPES:
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(
             status_code=400,
-            detail="Only JPEG, PNG, and WebP images are supported",
+            detail="Only JPEG, PNG, WebP, and BMP images are supported",
         )
 
     try:
-        data = file.file.read(settings.max_upload_bytes + 1)
-        if len(data) > settings.max_upload_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail="Image is too large",
-            )
-
-        if not data:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        data = read_upload(file)
         try:
             return enroll_person(name, data, file.filename or "reference.jpg")
         except ServiceError as exc:

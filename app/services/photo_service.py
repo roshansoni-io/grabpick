@@ -9,7 +9,7 @@ import numpy as np
 
 from ..exceptions import ProcessingError
 from ..database import DatabaseError, save_image_metadata
-from ..ml.types import Detection, RecognitionResult
+from ..ml.types import RecognitionResult
 from ..schemas.face import Face, FaceMatch
 from ..schemas.photo import Photo, PhotoUploadResponse
 from ..utils import storage
@@ -60,7 +60,7 @@ def process_upload(data: bytes, filename: str) -> PhotoUploadResponse:
     """
     image = storage.decode_image(data)
     safe_name = storage.safe_filename(filename)
-    original = storage.save_original(data, safe_name)
+    original, _ = storage.save_original(data, safe_name)
 
     try:
         results = run_identify(image)

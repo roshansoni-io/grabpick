@@ -1,10 +1,15 @@
-"""Face recognition API: detection, embedding, and identification."""
+"""Face recognition API: detection and embedding.
+
+Identity resolution is intentionally not part of this module: the ML layer
+detects and embeds faces, and the service layer matches embeddings against
+the database via pgvector (``match_identity``/``search_embeddings``).
+"""
 
 from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 from PIL import Image
@@ -15,7 +20,6 @@ from .detection.detector import FaceDetector
 from .embedding.embedder import FaceEmbedder
 from .exceptions import FaceRecognitionError
 from .preprocessing import annotate
-from .recognition.matcher import FaceMatcher
 from .recognition.pipeline import RecognitionPipeline, extract_faces
 from .types import Detection, RecognitionResult
 
@@ -81,16 +85,6 @@ def _pipeline() -> RecognitionPipeline:
             _PIPELINE = RecognitionPipeline(detector=detector, embedder=embedder)
         _PIPELINE.update_settings(settings)
     return _PIPELINE
-
-
-def reset_pipeline() -> None:
-    global _DETECTOR, _EMBEDDER, _PIPELINE, _DETECTOR_KEY, _EMBEDDER_KEY
-    with _LOCK:
-        _DETECTOR = None
-        _EMBEDDER = None
-        _PIPELINE = None
-        _DETECTOR_KEY = None
-        _EMBEDDER_KEY = None
 
 
 def load_image(path: Union[str, Path], mode: str = "RGB") -> np.ndarray:
@@ -170,68 +164,23 @@ def face_encodings(
     return list(pipeline.embedder.embed(faces))
 
 
-def set_database(
-    database: Dict[str, np.ndarray],
-    threshold: Optional[float] = None,
-) -> None:
-    """Set the identity database used by the recognition pipeline."""
-    with _LOCK:
-        if threshold is not None:
-            settings.recognize_threshold = threshold
-        _pipeline().matcher = FaceMatcher(
-            database=database, threshold=settings.recognize_threshold
-        )
-
-
 def identify(
     image: np.ndarray,
     input_size: Optional[Tuple[int, int]] = None,
     confidence_threshold: Optional[float] = None,
-    recognize_threshold: Optional[float] = None,
 ) -> List[RecognitionResult]:
-    """Run end-to-end recognition: detect, align, embed, match."""
+    """Run end-to-end recognition: detect, align, and embed faces.
+
+    Returns ``RecognitionResult`` items with ``embedding`` set; identity
+    resolution against the database happens in the service layer.
+    """
     with _LOCK:
         if input_size is not None:
             settings.input_size = input_size
         if confidence_threshold is not None:
             settings.confidence_threshold = confidence_threshold
-        if recognize_threshold is not None:
-            settings.recognize_threshold = recognize_threshold
         pipeline = _pipeline()
     return pipeline.run(image, settings.input_size)
-
-
-def face_similarity(
-    encodings: Union[List[np.ndarray], np.ndarray],
-    target: np.ndarray,
-) -> np.ndarray:
-    """Cosine similarity between encodings and a target embedding."""
-    encodings_arr = np.asarray(encodings, dtype=np.float32)
-    if encodings_arr.ndim == 1:
-        encodings_arr = encodings_arr[None]
-    return encodings_arr @ np.asarray(target, dtype=np.float32)
-
-
-def face_distance(
-    encodings: Union[List[np.ndarray], np.ndarray],
-    target: np.ndarray,
-) -> np.ndarray:
-    """Euclidean distance between encodings and a target embedding."""
-    encodings_arr = np.asarray(encodings, dtype=np.float32)
-    if encodings_arr.ndim == 1:
-        encodings_arr = encodings_arr[None]
-    return np.linalg.norm(
-        encodings_arr - np.asarray(target, dtype=np.float32), axis=1
-    )
-
-
-def compare_faces(
-    known_encodings: Union[List[np.ndarray], np.ndarray],
-    candidate: np.ndarray,
-    tolerance: float = 0.55,
-) -> List[bool]:
-    """Check whether a candidate embedding matches any known encoding."""
-    return (face_similarity(known_encodings, candidate) >= (1.0 - tolerance)).tolist()
 
 
 def draw_faces(
@@ -245,7 +194,7 @@ def draw_faces(
     if isinstance(results[0], RecognitionResult):
         detections = [r.detection for r in results]
         if labels is None:
-            labels = [f"{r.person_id}({r.similarity:.2f})" for r in results]
+            labels = [f"{r.detection.score:.2f}" for r in results]
     else:
         detections = results
     return annotate(image, detections, labels)
@@ -254,17 +203,11 @@ def draw_faces(
 __all__ = [
     "FaceDetector",
     "FaceEmbedder",
-    "FaceMatcher",
     "RecognitionPipeline",
-    "compare_faces",
     "draw_faces",
-    "face_distance",
     "face_encodings",
     "face_locations",
-    "face_similarity",
     "identify",
     "load_image",
-    "reset_pipeline",
-    "set_database",
     "settings",
 ]

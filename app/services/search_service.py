@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from .. import ml
+from ..config import settings
 from ..database import DatabaseError, list_person_images, search_embeddings
 from ..exceptions import ProcessingError
 from ..schemas.search import PersonImagesResponse, SearchResponse, SearchResult
@@ -16,7 +17,7 @@ from .face_service import resolve_names
 def search_image_from_bytes(
     data: bytes,
     limit: int = 10,
-    recognize_threshold: float = 0.45,
+    recognize_threshold: float = settings.recognize_threshold,
 ) -> SearchResponse:
     try:
         image = storage.decode_image(data)
@@ -28,7 +29,7 @@ def search_image_from_bytes(
 def search_image(
     image: np.ndarray,
     limit: int = 10,
-    recognize_threshold: float = 0.45,
+    recognize_threshold: float = settings.recognize_threshold,
 ) -> SearchResponse:
     """Embed each query face and rank the nearest people by similarity.
 

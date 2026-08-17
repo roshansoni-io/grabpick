@@ -16,7 +16,3 @@ class RecognitionResult:
     person_id: str = "unknown"
     similarity: float = 0.0
     embedding: Optional[np.ndarray] = None
-
-    @property
-    def name(self) -> str:
-        return self.person_id

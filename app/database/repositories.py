@@ -11,10 +11,14 @@ from .models import FaceEmbedding, Identity, Image
 
 
 def _distance_expr(metric: str, query: np.ndarray):
-    """Return the pgvector distance expression and score formula for a metric."""
+    """Return the pgvector distance expression and score formula for a metric.
+
+    ``distance`` is the pgvector distance used for ORDER BY (KNN); ``score``
+    maps it to a similarity where higher = closer and an exact match = 1.0.
+    """
     if metric == "l2":
         distance = FaceEmbedding.vector.l2_distance(query)
-        return distance, -distance
+        return distance, (1 / (1 + distance))
     if metric == "inner_product":
         distance = FaceEmbedding.vector.max_inner_product(query)
         return distance, -distance
@@ -26,7 +30,7 @@ def save_identity(
     name: str,
     embedding: np.ndarray,
     source_image: str,
-    person_id: str | None,
+    person_id: str | None = None,
 ) -> str:
     """Persist an identity and one embedding row; returns the person_id."""
     person_id = person_id or uuid.uuid4().hex[:8]
@@ -44,27 +48,6 @@ def save_identity(
     except Exception as exc:
         raise DatabaseError(f"Failed to save identity {person_id}: {exc}") from exc
     return person_id
-
-
-def load_database() -> Dict[str, np.ndarray]:
-    """Load all embeddings grouped by identity, ready for in-memory matching."""
-    try:
-        with session_scope() as session:
-            rows = session.execute(
-                select(Identity.person_id, FaceEmbedding.vector, FaceEmbedding.id)
-                .join(FaceEmbedding, isouter=True)
-                .order_by(Identity.person_id, FaceEmbedding.id)
-            ).all()
-    except Exception as exc:
-        raise DatabaseError(f"Failed to load database: {exc}") from exc
-
-    database: Dict[str, List[np.ndarray]] = {}
-    for person_id, vector, _ in rows:
-        if vector is None:
-            continue
-        database.setdefault(person_id, []).append(np.asarray(vector, dtype=np.float32))
-
-    return {pid: np.vstack(vectors) for pid, vectors in database.items()}
 
 
 def list_identities() -> List[dict]:
@@ -98,16 +81,64 @@ def list_identities() -> List[dict]:
     ]
 
 
+def get_identity(person_id: str) -> dict | None:
+    """Return a single identity's metadata with embedding count."""
+    try:
+        with session_scope() as session:
+            row = session.execute(
+                select(
+                    Identity.person_id,
+                    Identity.name,
+                    Identity.created_at,
+                    Identity.updated_at,
+                    func.count(FaceEmbedding.id),
+                )
+                .outerjoin(FaceEmbedding)
+                .where(Identity.person_id == person_id)
+                .group_by(Identity.person_id)
+            ).first()
+    except Exception as exc:
+        raise DatabaseError(f"Failed to get identity {person_id}: {exc}") from exc
+
+    if row is None:
+        return None
+    return {
+        "person_id": row.person_id,
+        "name": row.name,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+        "embedding_count": row[4],
+    }
+
+
+def get_identity_names(person_ids: list[str]) -> Dict[str, str]:
+    """Map person_ids to their names in a single query."""
+    if not person_ids:
+        return {}
+    try:
+        with session_scope() as session:
+            rows = session.execute(
+                select(Identity.person_id, Identity.name).where(
+                    Identity.person_id.in_(person_ids)
+                )
+            ).all()
+    except Exception as exc:
+        raise DatabaseError(f"Failed to resolve identity names: {exc}") from exc
+    return {pid: name for pid, name in rows}
+
+
 def search_embeddings(
     embedding: np.ndarray,
     limit: int = 10,
     metric: str = settings.distance_metric,
 ) -> List[Tuple[str, float]]:
-    """Find nearest identities by pgvector distance for the given metric.
+    """Find the nearest *identities* by pgvector KNN (nearest neighbour).
+
+    The pgvector distance operator for ``metric`` is ordered (backed by the
+    HNSW index) and the nearest embedding rows are then collapsed per
+    identity, returning each person once with their best similarity.
 
     Supported metrics: ``cosine`` (default), ``l2``, ``inner_product``.
-    Returns ``(person_id, similarity)`` where similarity is higher for
-    closer matches (>=1.0 for an exact match under cosine/L2).
     """
     query = embedding.flatten().astype(np.float32)
     distance, score = _distance_expr(metric, query)
@@ -119,12 +150,37 @@ def search_embeddings(
                     score.label("similarity"),
                 )
                 .order_by(distance)
-                .limit(limit)
+                .limit(max(limit * 10, 100))
             ).all()
     except Exception as exc:
         raise DatabaseError(f"Failed to search embeddings: {exc}") from exc
 
-    return [(person_id, float(similarity)) for person_id, similarity in rows]
+    best: Dict[str, float] = {}
+    for person_id, similarity in rows:
+        if similarity > best.get(person_id, float("-inf")):
+            best[person_id] = similarity
+    ranked = sorted(best.items(), key=lambda item: item[1], reverse=True)
+    return ranked[:limit]
+
+
+def match_identity(
+    embedding: np.ndarray,
+    threshold: float = settings.recognize_threshold,
+    metric: str = settings.distance_metric,
+) -> Tuple[str, float]:
+    """Return ``(person_id, similarity)`` of the nearest identity via pgvector.
+
+    Falls back to ``("unknown", score)`` when the best match is below
+    ``threshold``. Uses the same vector-DB nearest-neighbour search as
+    ``search_embeddings``.
+    """
+    ranked = search_embeddings(embedding, limit=1, metric=metric)
+    if not ranked:
+        return "unknown", 0.0
+    person_id, similarity = ranked[0]
+    if similarity < threshold:
+        return "unknown", similarity
+    return person_id, similarity
 
 
 def save_image_metadata(image: str, path: str, people: list[dict]) -> None:

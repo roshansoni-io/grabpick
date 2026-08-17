@@ -1,178 +1,421 @@
-# GrabPick
+GrabPick
 
-Faces search engine for personal photos. Detect, embed, and identify faces;
-store identity embeddings in PostgreSQL with pgvector; expose a FastAPI image API.
+Search your personal photo library by face. Self-hosted, private, and local.
 
-## Requirements
+GrabPick detects faces in your photos, generates face embeddings with ONNX Runtime, stores them in PostgreSQL using pgvector, and finds matching people using vector similarity search.
 
-- Python 3.14+ (aarch64)
-- PostgreSQL 18+ with the **pgvector** extension
-- ONNX Runtime + model files (see below)
+No cloud vision API is required.
 
-## 1. Install dependencies
+---
 
-```bash
+Features
+
+- Local face detection and embedding
+- SCRFD face detection
+- EdgeFace face embeddings
+- PostgreSQL with pgvector
+- HNSW approximate nearest-neighbour search
+- Cosine, L2, and inner-product distance metrics
+- Content-hash based image deduplication
+- Batch photo-library indexing
+- Identity-based photo search
+- FastAPI REST API
+- PostgreSQL as the source of truth
+- No in-memory face database
+
+---
+
+How It Works
+
+Photo
+  |
+  v
+Face Detection
+  |
+  v
+Face Embedding
+  |
+  v
+PostgreSQL + pgvector
+  |
+  v
+HNSW Similarity Search
+  |
+  v
+Matching Identity
+  |
+  v
+Matching Photos
+
+The application processes images locally. Face embeddings are stored in PostgreSQL and queried directly using pgvector.
+
+---
+
+Tech Stack
+
+Component| Technology
+API| FastAPI
+Database| PostgreSQL
+Vector Search| pgvector
+Vector Index| HNSW
+Face Detector| SCRFD
+Face Embedder| EdgeFace-XS
+ML Runtime| ONNX Runtime
+ORM| SQLAlchemy
+PostgreSQL Driver| Psycopg
+
+---
+
+Requirements
+
+- Python 3.14+
+- PostgreSQL 18+
+- PostgreSQL with the pgvector extension
+- ONNX Runtime
+- A supported CPU architecture
+
+Models
+
+Place the ONNX models at:
+
+model/
+├── detector/
+│   └── scrfd_500m_gnkps.onnx
+└── embedding/
+    └── edgeface_xs_gamma_06.onnx
+
+On platforms such as Termux/Android, some Python packages may need to be compiled from source because prebuilt wheels are not always available.
+
+---
+
+Installation
+
+Clone the repository:
+
+git clone https://github.com/<your-username>/grabpick.git
+cd grabpick
+
+Install dependencies:
+
 pip install -r requirements.txt
-```
 
-Models must be present at:
+Create the environment file:
 
-```
-model/detector/scrfd_500m_gnkps.onnx
-model/embedding/edgeface_xs_gamma_06.onnx
-```
-
-> **Note (Termux/Android):** `pip` reports platform `android-24-arm64_v8a`, so PyPI
-> ships no prebuilt wheels and C/Rust packages compile from source (slow). Use the
-> pure-Python stack: `fastapi==0.103.2`, `pydantic==1.10.26`, `uvicorn`, and avoid
-> `uvicorn[standard]` (uvloop needs a native build).
-
-## 2. Configure environment
-
-```bash
 cp .env.example .env
-```
 
-Adjust if needed:
+Configure the database and other settings in ".env".
 
-```bash
+---
+
+Configuration
+
+GrabPick uses environment variables for configuration.
+
 DATABASE_URL=postgresql+psycopg://localhost:5432/grabpick
+
+GRABPICK_DISTANCE_METRIC=cosine
+GRABPICK_THRESHOLD=0.45
+
 GRABPICK_DETECTOR_MODEL=model/detector/scrfd_500m_gnkps.onnx
 GRABPICK_EMBEDDING_MODEL=model/embedding/edgeface_xs_gamma_06.onnx
-GRABPICK_THRESHOLD=0.45
-GRABPICK_DISTANCE_METRIC=cosine
+
 GRABPICK_RATE_LIMIT_MAX=60
 GRABPICK_RATE_LIMIT_WINDOW=60
-GRABPICK_TRUST_PROXY=
-```
 
-`GRABPICK_DISTANCE_METRIC` selects the pgvector distance metric used by
-`/api/search` and identity matching: `cosine` (default), `l2` (Euclidean), or
-`inner_product`. Embeddings are stored as pgvector `vector(512)` columns and an
-HNSW index is created per metric for fast approximate nearest-neighbour search.
+Configuration Options
 
-Everything else has sane defaults in `app/config.py`.
+Variable| Default| Description
+"DATABASE_URL"| "postgresql+psycopg://localhost:5432/grabpick"| PostgreSQL connection URL
+"GRABPICK_DISTANCE_METRIC"| "cosine"| Vector distance metric
+"GRABPICK_THRESHOLD"| "0.45"| Identity matching threshold
+"GRABPICK_DETECTOR_MODEL"| "model/detector/scrfd_500m_gnkps.onnx"| Detector model
+"GRABPICK_EMBEDDING_MODEL"| "model/embedding/edgeface_xs_gamma_06.onnx"| Embedding model
+"GRABPICK_RATE_LIMIT_MAX"| "60"| Maximum requests per window
+"GRABPICK_RATE_LIMIT_WINDOW"| "60"| Rate-limit window in seconds
+"GRABPICK_TRUST_PROXY"| unset| Whether to trust "X-Forwarded-For"
 
-## 3. Start PostgreSQL
+---
 
-```bash
-export PGDATA=$PREFIX/var/lib/postgresql
-pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" -o "-p 5432 -k $PGDATA" start
-```
+Database Setup
 
-Create the `grabpick` database if it does not exist:
+Create the database:
 
-```bash
-psql -h 127.0.0.1 -p 5432 -d postgres -c "CREATE DATABASE grabpick;"
-```
+createdb grabpick
 
-If the app connects as a non-owner role (e.g. `dbviewer`), grant it ownership
-of the tables plus `public` schema access, or startup will fail with
-"InsufficientPrivilege":
+Enable pgvector:
 
-```bash
-psql -h 127.0.0.1 -p 5432 -d grabpick \
-  -c "GRANT USAGE, CREATE ON SCHEMA public TO dbviewer;"
-psql -h 127.0.0.1 -p 5432 -d grabpick \
-  -c "ALTER TABLE identities OWNER TO dbviewer; ALTER TABLE face_embeddings OWNER TO dbviewer; ALTER SEQUENCE face_embeddings_id_seq OWNER TO dbviewer; ALTER TABLE images OWNER TO dbviewer; ALTER SEQUENCE images_id_seq OWNER TO dbviewer;"
-```
+CREATE EXTENSION IF NOT EXISTS vector;
 
-## 4. Initialize the database (once)
+Initialize the GrabPick schema:
 
-Creates the `vector` extension, tables, and the HNSW indexes (one per supported
-distance metric):
-
-```bash
 PYTHONPATH=. python scripts/init_db.py
-```
 
-## 5. Run the API
+The initialization script creates the required tables, enables pgvector, and creates the HNSW indexes.
 
-```bash
+Embeddings are stored as:
+
+vector(512)
+
+Distance Metrics
+
+GrabPick supports:
+
+cosine
+l2
+inner_product
+
+The selected metric is controlled by:
+
+GRABPICK_DISTANCE_METRIC=cosine
+
+---
+
+Running the API
+
+Start GrabPick with:
+
 PYTHONPATH=. python -m app
-```
 
-This starts uvicorn (with `--reload`) on `http://0.0.0.0:8000`. The app lifespan
-runs `init_db()` and loads the in-memory matcher on startup.
+Or run Uvicorn directly:
 
-Equivalent without the package entrypoint:
+PYTHONPATH=. python -m uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --reload
 
-```bash
-PYTHONPATH=. python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
+The API will be available at:
 
-Open http://localhost:8000/docs for interactive API docs.
+http://localhost:8000
 
-## API endpoints
+Interactive API documentation:
 
-| Method | Path                     | Description                                        |
-|--------|--------------------------|----------------------------------------------------|
-| GET    | `/api/health`            | Service status + model/db info                     |
-| GET    | `/api/people`            | List known people                                  |
-| POST   | `/api/people`            | Enroll a person (multipart `file` + `name`)        |
-| GET    | `/api/people/{id}`       | Get one person                                     |
-| DELETE | `/api/people/{id}`       | Delete a person                                    |
-| POST   | `/api/photos`            | Upload image, detect + identify faces              |
-| POST   | `/api/search`            | Upload query image → ranked person matches         |
-| GET    | `/api/search/{person_id}` | All images a person appeared in                     |
+http://localhost:8000/docs
 
-Static media is served at `/static` (thumbnails/face crops) and `/originals`.
+---
 
-### Example
+API
 
-```bash
-# Enroll a person
-curl -F "file=@face.jpg" -F "name=Alice" http://localhost:8000/api/people
+Method| Endpoint| Description
+"GET"| "/api/health"| Service and model status
+"GET"| "/api/people"| List known people
+"POST"| "/api/people"| Enroll a person
+"GET"| "/api/people/{id}"| Get a person
+"DELETE"| "/api/people/{id}"| Delete a person
+"POST"| "/api/photos"| Upload and process a photo
+"POST"| "/api/search"| Search using a face image
+"GET"| "/api/search/{person_id}"| Get photos containing a person
 
-# Search by image
-curl -F "file=@query.jpg" http://localhost:8000/api/search
+Static thumbnails and media are served through "/static", while original images are available through "/originals".
 
-# List every image a person appeared in
-curl http://localhost:8000/api/search/{person_id}
+---
 
-# Upload and process a photo
-curl -F "file=@photo.jpg" http://localhost:8000/api/photos
-```
+Examples
 
-## Batch embedding from a storage folder
+Enroll a Person
 
-`scripts/embed_storage.py` scans a folder, detects and embeds every face, and
-writes them to the database. Each face is first matched against all identities
-already in the DB; matches are skipped, and only new persons are added with a
-unique `person_id` and the configured name (default `unknown`). It also records
-per-image metadata (the people found, count, and path) in the `images` table.
+curl \
+  -F "file=@face.jpg" \
+  -F "name=Alice" \
+  http://localhost:8000/api/people
 
-```bash
-PYTHONPATH=. python scripts/embed_storage.py                        # storage/originals
-PYTHONPATH=. python scripts/embed_storage.py --dir /path/to/photos --name "Family"
-PYTHONPATH=. python scripts/embed_storage.py --rescan --dry-run     # re-scan, no writes
-```
+Search by Face
 
-## Model latency benchmark
+curl \
+  -F "file=@query.jpg" \
+  http://localhost:8000/api/search
 
-`scripts/benchmark_models.py` runs the detector and embedder on synthetic data
-and reports latency statistics (mean/p50/p95/p99/max, throughput). No data is
-written to the database or disk.
+Upload a Photo
 
-```bash
-PYTHONPATH=. python scripts/benchmark_models.py                          # 100 detections, 10k embeddings
-PYTHONPATH=. python scripts/benchmark_models.py --batch-size 32 --threads 4
-```
+curl \
+  -F "file=@photo.jpg" \
+  http://localhost:8000/api/photos
 
-## Project layout
+Get Photos for a Person
 
-```
-app/
-├── __main__.py       `python -m app` entrypoint
-├── main.py           FastAPI app (lifespan, routers, static mounts, middleware)
-├── config.py         Settings (env-driven)
-├── api/              health, photos, people, search routers + middleware
-├── schemas/          Pydantic response/request models
-├── services/         photo, face, search, person services
-├── ml/               detection, embedding, recognition (ONNX)
-├── database/         SQLAlchemy models, repositories, connection
-└── utils/            storage, logger
-scripts/              init_db.py, smoke_test.py, embed_storage.py, benchmark_models.py
-model/                ONNX models (gitignored)
-storage/              uploads (gitignored)
-```
+curl \
+  http://localhost:8000/api/search/<person_id>
+
+---
+
+Batch Indexing
+
+GrabPick can scan an existing photo library and index detected faces.
+
+Run against the default storage directory:
+
+PYTHONPATH=. python scripts/embed_storage.py
+
+Scan a specific directory:
+
+PYTHONPATH=. python scripts/embed_storage.py \
+  --dir /path/to/photos
+
+Provide a default name for newly discovered identities:
+
+PYTHONPATH=. python scripts/embed_storage.py \
+  --dir /path/to/photos \
+  --name "Unknown"
+
+Run a dry scan without modifying the database:
+
+PYTHONPATH=. python scripts/embed_storage.py \
+  --rescan \
+  --dry-run
+
+Images that have already been processed can be skipped during normal indexing.
+
+---
+
+Face Matching
+
+When a query image is submitted, GrabPick performs the following process:
+
+Query Image
+    |
+Face Detection
+    |
+Face Embedding
+    |
+pgvector HNSW Search
+    |
+Similarity Ranking
+    |
+Threshold Check
+    |
+Matching Identity
+
+The embedding is compared directly against vectors stored in PostgreSQL.
+
+This avoids loading the entire face database into application memory and keeps PostgreSQL as the single source of truth.
+
+---
+
+Image Deduplication
+
+GrabPick uses the SHA-256 hash of an image's contents as its image identifier.
+
+Image Bytes
+    |
+SHA-256
+    |
+Image ID
+
+Uploading identical image data therefore does not create duplicate image records.
+
+---
+
+Storage
+
+Images are stored locally:
+
+storage/
+├── originals/
+└── thumbnails/
+
+These directories should not be committed to Git.
+
+The API exposes them through:
+
+/originals
+/static
+
+---
+
+Testing
+
+Run the smoke test:
+
+PYTHONPATH=. python scripts/smoke_test.py
+
+Run the model benchmark:
+
+PYTHONPATH=. python scripts/benchmark_models.py
+
+The benchmark uses synthetic inputs and does not write to the database or modify the photo library.
+
+---
+
+Project Structure
+
+grabpick/
+├── app/
+│   ├── __main__.py
+│   ├── main.py
+│   ├── config.py
+│   │
+│   ├── api/
+│   │   ├── health.py
+│   │   ├── people.py
+│   │   ├── photos.py
+│   │   └── search.py
+│   │
+│   ├── database/
+│   │   ├── models.py
+│   │   ├── repositories.py
+│   │   └── connection.py
+│   │
+│   ├── ml/
+│   │   ├── detection.py
+│   │   └── embedding.py
+│   │
+│   ├── services/
+│   │   ├── face.py
+│   │   ├── photo.py
+│   │   ├── person.py
+│   │   └── search.py
+│   │
+│   ├── schemas/
+│   └── utils/
+│
+├── model/
+│   ├── detector/
+│   └── embedding/
+│
+├── scripts/
+│   ├── init_db.py
+│   ├── embed_storage.py
+│   ├── smoke_test.py
+│   └── benchmark_models.py
+│
+├── storage/
+│   ├── originals/
+│   └── thumbnails/
+│
+├── .env.example
+├── requirements.txt
+└── LICENSE
+
+---
+
+Privacy
+
+GrabPick is designed for local photo libraries.
+
+The face detection and embedding pipeline runs locally, and the application does not require a cloud face-recognition service.
+
+Images and embeddings remain under your control.
+
+Because face embeddings are biometric information, access to the PostgreSQL database and storage directory should be properly secured.
+
+---
+
+Roadmap
+
+- Web-based photo browser
+- Multi-face search
+- Face-quality checks during enrollment
+- Hardware acceleration
+- Background library indexing
+- File-system change detection
+- Thumbnail caching
+- Mobile-friendly frontend
+- Improved identity management
+- Automatic people grouping
+
+---
+
+License
+
+GrabPick is distributed under the MIT License.
+
+See ""LICENSE"" (LICENSE) for details.

@@ -58,7 +58,7 @@ def report(name: str, timings: list[float]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--detections", type=int, default=100)
-    parser.add_argument("--embeddings", type=int, default= 10_000)
+    parser.add_argument("--embeddings", type=int, default=10_000)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--image-size", type=int, default=640)

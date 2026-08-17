@@ -8,7 +8,6 @@ from ..detection.detector import FaceDetector
 from ..embedding.embedder import FaceEmbedder
 from ..preprocessing import align_face, crop_face
 from ..types import Detection, RecognitionResult
-from .matcher import FaceMatcher
 
 
 def extract_faces(
@@ -32,24 +31,25 @@ def extract_faces(
 
 
 class RecognitionPipeline:
-    """End-to-end face recognition: detect, align, embed, match."""
+    """End-to-end face recognition: detect, align, and embed.
+
+    Identity resolution is intentionally *not* done here: the pipeline
+    returns detections with embeddings and the service layer matches them
+    against the database via pgvector, keeping the ML layer pure.
+    """
 
     def __init__(
         self,
         detector: FaceDetector,
         embedder: Optional[FaceEmbedder],
-        matcher: Optional[FaceMatcher] = None,
     ):
         self.detector = detector
         self.embedder = embedder
-        self.matcher = matcher
 
     def update_settings(self, settings: Settings) -> None:
         if self.detector:
             self.detector.conf_thresh = settings.confidence_threshold
             self.detector.nms_thresh = settings.nms_threshold
-        if self.matcher:
-            self.matcher.threshold = settings.recognize_threshold
 
     def run(
         self,
@@ -73,20 +73,10 @@ class RecognitionPipeline:
             logger.error("Embedding failed")
             return [RecognitionResult(detection=d) for d in valid]
 
-        matches = self._match(embeddings)
-
         return [
             RecognitionResult(
                 detection=det,
-                person_id=person_id,
-                similarity=score,
                 embedding=emb,
             )
-            for det, emb, (person_id, score) in zip(valid, embeddings, matches)
+            for det, emb in zip(valid, embeddings)
         ]
-
-    def _match(self, embeddings: np.ndarray) -> List[Tuple[str, float]]:
-        if self.matcher is None:
-            return [("unknown", 0.0)] * len(embeddings)
-        results = self.matcher.match(embeddings)
-        return results if isinstance(results, list) else [results]

@@ -1,4 +1,8 @@
-"""Face detection/recording: thin wrappers around the ML public API."""
+"""Face detection/embedding: thin wrappers around the ML public API.
+
+Identity resolution against the database happens here via pgvector, so the
+ML layer stays a pure detect+embed pipeline.
+"""
 
 from __future__ import annotations
 
@@ -7,20 +11,9 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from .. import ml
-from ..database import load_database, list_identities
+from ..database import match_identity, get_identity_names
 from ..ml.types import Detection, RecognitionResult
 from ..utils.logger import logger
-
-
-def reload_database() -> None:
-    """Rebuild the in-memory matcher from the current DB contents."""
-    try:
-        database = load_database()
-    except Exception as exc:
-        logger.error("reload_database failed: %s", exc)
-        raise
-    ml.set_database(database, threshold=ml.settings.recognize_threshold)
-    logger.info("Matcher rebuilt with %d identities", len(database))
 
 
 def detect_faces(
@@ -37,10 +30,22 @@ def run_identify(
     image: np.ndarray,
     recognize_threshold: Optional[float] = None,
 ) -> List[RecognitionResult]:
-    """Detect, embed, and match faces; returns recognition results."""
-    return ml.identify(
-        image, recognize_threshold=recognize_threshold
-    )
+    """Detect, embed, and resolve identities against the database.
+
+    Each detected face is embedded and matched with pgvector
+    (``match_identity``); faces below ``recognize_threshold`` are marked
+    ``"unknown"``.
+    """
+    threshold = recognize_threshold or ml.settings.recognize_threshold
+    results = ml.identify(image)
+    resolved: List[RecognitionResult] = []
+    for result in results:
+        if result.embedding is not None:
+            person_id, similarity = match_identity(result.embedding, threshold=threshold)
+            result.person_id = person_id
+            result.similarity = similarity
+        resolved.append(result)
+    return resolved
 
 
 def embed_face(
@@ -54,13 +59,10 @@ def embed_face(
 
 
 def resolve_names(person_ids: List[str]) -> Dict[str, str]:
-    """Map person_ids to display names using the DB."""
-    if not person_ids:
-        return {}
+    """Map person_ids to display names using the DB (single query)."""
     try:
-        identities = list_identities()
+        names = get_identity_names(person_ids)
     except Exception as exc:
         logger.error("resolve_names failed: %s", exc)
         return {}
-    by_id = {item["person_id"]: item["name"] for item in identities}
-    return {pid: by_id.get(pid, pid) for pid in person_ids}
+    return {pid: names.get(pid, pid) for pid in person_ids}

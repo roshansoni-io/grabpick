@@ -11,7 +11,6 @@ from .api import health, people, photos, search
 from .api.middleware import RateLimitMiddleware
 from .config import settings
 from .database import init_db
-from .services.face_service import reload_database
 from .utils.logger import logger
 
 APP_TITLE = "GrabPick API"
@@ -26,8 +25,6 @@ DESCRIPTION = (
 async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     init_db()
-    logger.info("Loading in-memory matcher...")
-    reload_database()
     logger.info("GrabPick API is ready")
     yield
     logger.info("Shutting down GrabPick API")

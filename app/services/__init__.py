@@ -1,7 +1,6 @@
 from .face_service import (
     detect_faces,
     embed_face,
-    reload_database,
     resolve_names,
     run_identify,
 )
@@ -24,7 +23,6 @@ __all__ = [
     "get_person",
     "list_people",
     "process_upload",
-    "reload_database",
     "resolve_names",
     "run_identify",
     "search_image",

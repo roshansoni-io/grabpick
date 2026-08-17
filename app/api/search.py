@@ -6,6 +6,7 @@ from ..exceptions import ServiceError
 from ..schemas.search import PersonImagesResponse, SearchResponse
 from ..services.search_service import search_image_from_bytes, search_images_for_person
 from ..utils.logger import logger
+from ..utils.storage import read_upload
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -24,13 +25,13 @@ def search_person_images(person_id: str) -> PersonImagesResponse:
 def search_endpoint(
     file: UploadFile = File(...),
     limit: int = Form(10, ge=1, le=100),
-    recognize_threshold: float = Form(0.45, ge=0.0, le=1.0),
+    recognize_threshold: float = Form(
+        settings.recognize_threshold, ge=0.0, le=1.0
+    ),
 ) -> SearchResponse:
     """Upload a query image and get ranked person matches."""
     try:
-        data = file.file.read(settings.max_upload_bytes + 1)
-        if len(data) > settings.max_upload_bytes:
-            raise HTTPException(status_code=413, detail="Uploaded file is too large")
+        data = read_upload(file)
     except HTTPException:
         raise
     except Exception as exc:
@@ -39,8 +40,6 @@ def search_endpoint(
     finally:
         file.file.close()
 
-    if not data:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
     try:
         return search_image_from_bytes(data, limit, recognize_threshold)
     except ServiceError as exc:
